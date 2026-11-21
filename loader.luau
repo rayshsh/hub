@@ -1211,6 +1211,11 @@ env.AutumnDiceContext = {
 	getHRP = getHRP, getRemote = getRemote, invoke = invoke, pathString = pathString,
 	BLUE = BLUE, GREEN = GREEN, YELLOW = YELLOW, ORANGE = ORANGE, GRAY = GRAY, RED = RED,
 }
+local runTabInitializer = Instance.new("BindableFunction")
+runTabInitializer.Parent = gui
+runTabInitializer.OnInvoke = function(initialize, context)
+	return initialize(context)
+end
 env.AutumnDiceLoadModule = function(fileName)
 	local url = "https://raw.githubusercontent.com/rayshsh/hub/refs/heads/main/tabs/" .. fileName
 	local source = game:HttpGet(url)
@@ -1218,7 +1223,7 @@ env.AutumnDiceLoadModule = function(fileName)
 	if type(chunk) ~= "function" then error(compileError or "Could not compile " .. fileName, 0) end
 	local initialize = chunk()
 	if type(initialize) ~= "function" then error("Invalid tab module: " .. fileName, 0) end
-	return initialize(env.AutumnDiceContext)
+	return runTabInitializer:Invoke(initialize, env.AutumnDiceContext)
 end
 
 env.AutumnDiceLoadModule("event.luau")
