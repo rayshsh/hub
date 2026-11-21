@@ -857,8 +857,12 @@ function AutoBuy.refreshOptions()
 
 	local key = table.concat(signature, "|")
 	if key == AutoBuy.stockKey then return end
+	local ok, err = pcall(AutoBuy.dropdown.SetOptions, options)
+	if not ok then
+		warn("[Auto Buy] Dropdown refresh failed: " .. tostring(err))
+		return
+	end
 	AutoBuy.stockKey = key
-	AutoBuy.dropdown.SetOptions(options)
 end
 
 local refreshQueued = false

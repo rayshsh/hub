@@ -1,5 +1,6 @@
 return function(ctx)
 local ReplicatedStorage, State, gui = ctx.ReplicatedStorage, ctx.State, ctx.gui
+local player, AutumnTravel = ctx.player, ctx.AutumnTravel
 local AutoPotion = ctx.AutoPotion or {}
 ctx.AutoPotion = AutoPotion
 local addTab, makeCard, makeToggle = ctx.addTab, ctx.makeCard, ctx.makeToggle
@@ -14,6 +15,8 @@ AutoPotion.pendingFamilies = AutoPotion.pendingFamilies or {}
 AutoPotion.lastSelectedByFamily = AutoPotion.lastSelectedByFamily or {}
 local potionModules, potionToken = nil, 0
 local potionRefreshSignature = nil
+local fuseBusy, fuseToken = false, 0
+local selectedFusePotions = {}
 
 local function loadPotionModules()
 	if potionModules then return potionModules end
@@ -36,6 +39,107 @@ local function getPotionNames()
 	end
 	table.sort(names)
 	return names
+end
+
+local function getFusablePotionNames()
+	local features = ReplicatedStorage.Framework.Features
+	local registry = loadPotionModules().registry
+	local fusing = require(features.PotionFusing.PotionFusingUtil)
+	local potions = {}
+	for name, config in registry.allEntries() do
+		if config.kind == "Boost" and config.category and config.tier and fusing.GetNextTier(name) then
+			table.insert(potions, name)
+		end
+	end
+	table.sort(potions)
+	return potions
+end
+
+local function fusePotions(onlySelected, shouldContinue)
+	local features = ReplicatedStorage.Framework.Features
+	local data = loadPotionModules().data
+	local registry = loadPotionModules().registry
+	local fusing = require(features.PotionFusing.PotionFusingUtil)
+	require(features.Inventory.EntryTypes)
+	local network = require(ReplicatedStorage.Packages.Network)
+	local fuse = network.ClientComm.new(ReplicatedStorage.Network, false, "PotionFusingService"):GetFunction("Fuse")
+	local eligible = {}
+	for _, entry in data.Inventory() do
+		if type(entry) == "table" and type(entry.name) == "string" and (not onlySelected or selectedFusePotions[entry.name])
+			and (tonumber(entry.amount) or 0) >= fusing.FUSE_COST and fusing.GetNextTier(entry.name) then
+			local ok, config = pcall(registry.expectEntryConfig, entry.name)
+			if ok and config and tonumber(config.tier) then
+				table.insert(eligible, { name = entry.name, amount = tonumber(entry.amount), tier = tonumber(config.tier) })
+			end
+		end
+	end
+	table.sort(eligible, function(a, b) return a.tier == b.tier and a.name < b.name or a.tier < b.tier end)
+	if #eligible == 0 then return 0 end
+
+	local owner = {}
+	if not AutumnTravel.acquire(owner, shouldContinue) then return 0 end
+	local total = 0
+	local ok, err = pcall(function()
+		local arrived, travelErr = AutumnTravel.ensureInAutumnWorld(shouldContinue)
+		if not arrived then error(travelErr or "Could not enter Autumn World.", 0) end
+		local moved, moveErr = AutumnTravel.pivotToZone("PotionFusing", shouldContinue, 15)
+		if not moved then error(moveErr or "Could not reach the Potion Fuser.", 0) end
+		while shouldContinue() do
+			eligible = {}
+			for _, entry in data.Inventory() do
+				if type(entry) == "table" and type(entry.name) == "string" and (not onlySelected or selectedFusePotions[entry.name])
+					and (tonumber(entry.amount) or 0) >= fusing.FUSE_COST and fusing.GetNextTier(entry.name) then
+					local valid, config = pcall(registry.expectEntryConfig, entry.name)
+					if valid and config and tonumber(config.tier) then table.insert(eligible, {name=entry.name, amount=tonumber(entry.amount), tier=tonumber(config.tier)}) end
+				end
+			end
+			table.sort(eligible, function(a, b) return a.tier == b.tier and a.name < b.name or a.tier < b.tier end)
+			if #eligible == 0 then break end
+			local tier, request, count = eligible[1].tier, {}, 0
+			for _, entry in ipairs(eligible) do
+				if entry.tier ~= tier then break end
+				local amount = math.floor(entry.amount / fusing.FUSE_COST)
+				if amount > 0 then request[entry.name], count = amount, count + amount end
+			end
+			if next(request) == nil then break end
+			local called, result, message = pcall(fuse, request)
+			if not called then error("Fusion request failed, please try again.", 0) end
+			if result ~= true then error(type(message) == "string" and message or "Fusion failed, please try again.", 0) end
+			total += count
+			task.wait(0.25)
+		end
+	end)
+	AutumnTravel.release(owner)
+	if not ok then error(err, 0) end
+	return total
+end
+
+local function runFuse(onlySelected)
+	if fuseBusy then return end
+	fuseBusy = true
+	local ok, total = pcall(fusePotions, onlySelected, function() return gui.Parent ~= nil end)
+	fuseBusy = false
+	if not ok then ctx.notify("error", "Something went wrong while fusing potions.")
+	elseif total > 0 then ctx.notify("success", ("Fused %d new potions!"):format(total))
+	else ctx.notify("error", "No potions are eligible for fusing!") end
+end
+
+local function setAutoFuse(enabled)
+	fuseToken += 1
+	if not enabled then return end
+	local token = fuseToken
+	task.spawn(function()
+		while token == fuseToken and State.Features.AutoFusePotion and gui.Parent do
+			task.wait(0.5)
+			if token == fuseToken and not fuseBusy then
+				local ok, total = pcall(fusePotions, true, function()
+					return token == fuseToken and State.Features.AutoFusePotion and gui.Parent ~= nil
+				end)
+				if not ok then ctx.notify("error", "Auto fuse failed: " .. tostring(total))
+				elseif total > 0 then ctx.notify("success", ("Auto fused %d new potions!"):format(total)) end
+			end
+		end
+	end)
 end
 
 local function potionInventory()
@@ -215,6 +319,26 @@ task.spawn(function()
 	end
 end)
 makeToggle(potionBody, 4, "Auto Use", "AutoPotion")
+
+local fuseBody = makeCard(potionTab.left, function(tile)
+	create("TextLabel", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "⚗", Font = Enum.Font.GothamBold, TextSize = 14, TextColor3 = THEME.accent, Parent = tile })
+end, "Auto Fuse Potion", 2)
+local fuseDropdown = makeDropdown(fuseBody, 1, {
+	label = "Potions to Fuse", multi = true, searchable = true,
+	placeholder = "Select Potions...", emptyText = "No fusable potions found", maxHeight = 180,
+	onChange = function(selected) selectedFusePotions = selected end,
+})
+local fuseOptions = getFusablePotionNames()
+fuseDropdown.SetOptions(fuseOptions)
+selectedFusePotions = fuseDropdown.selected
+makeToggle(fuseBody, 2, "Auto Fuse Potion", "AutoFusePotion")
+local fuseAll = create("TextButton", {
+	LayoutOrder = 3, Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = THEME.accentDim,
+	Text = "Fuse All Potions", Font = Enum.Font.GothamBold, TextSize = 12,
+	TextColor3 = THEME.text, AutoButtonColor = true, Parent = fuseBody,
+}, { ctx.corner(8), ctx.stroke(THEME.stroke) })
+fuseAll.Activated:Connect(function() task.spawn(runFuse, false) end)
+ctx.FeatureHandlers.AutoFusePotion = setAutoFuse
 ctx.FeatureHandlers.AutoPotion = AutoPotion.setEnabled
 ctx.CleanupHandlers.potion = function()
 	if AutoPotion.refreshConnection then pcall(function() AutoPotion.refreshConnection:Disconnect() end) end
