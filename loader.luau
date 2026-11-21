@@ -1349,3 +1349,4 @@ for _, name in ipairs({ "AntiAfk", "AutoDice" }) do
 	SetFeature(name, true)
 end
 
+initializeAutoQuest()
