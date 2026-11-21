@@ -1211,7 +1211,7 @@ env.AutumnDiceContext = {
 	BLUE = BLUE, GREEN = GREEN, YELLOW = YELLOW, ORANGE = ORANGE, GRAY = GRAY, RED = RED,
 }
 env.AutumnDiceLoadModule = function(fileName)
-	local url = "https://raw.githubusercontent.com/rayshsh/ray-hub/refs/heads/main/tabs/" .. fileName
+	local url = "https://raw.githubusercontent.com/rayshsh/hub/refs/heads/main/tabs/" .. fileName
 	local source = game:HttpGet(url)
 	local chunk, compileError = loadstring(source)
 	if type(chunk) ~= "function" then error(compileError or "Could not compile " .. fileName, 0) end
@@ -1219,6 +1219,7 @@ env.AutumnDiceLoadModule = function(fileName)
 	if type(initialize) ~= "function" then error("Invalid tab module: " .. fileName, 0) end
 	return initialize(env.AutumnDiceContext)
 end
+
 env.AutumnDiceLoadModule("event.luau")
 env.AutumnDiceLoadModule("potion.luau")
 env.AutumnDiceLoadModule("tower.luau")
