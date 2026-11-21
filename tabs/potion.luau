@@ -301,19 +301,27 @@ local function applyPotionOptions(names)
 	potionSelection.names = potionDropdown.selected
 end
 AutoPotion.refreshEvent = Instance.new("BindableEvent")
-AutoPotion.refreshConnection = AutoPotion.refreshEvent.Event:Connect(applyPotionOptions)
+AutoPotion.refreshConnection = AutoPotion.refreshEvent.Event:Connect(function(names, signature)
+	if not ctx.Alive then return end
+	local ok, err = pcall(applyPotionOptions, names)
+	if not ok then
+		warn("[Auto Potion] Dropdown refresh failed: " .. tostring(err))
+		return
+	end
+	potionRefreshSignature = signature
+end)
 AutoPotion.refreshOptions = function()
+	if not ctx.Alive then return end
 	local ok, names = pcall(getPotionNames)
 	if not ok then return end
 	local signature = table.concat(names, "\0")
-	if signature ~= potionRefreshSignature then
-		potionRefreshSignature = signature
-		AutoPotion.refreshEvent:Fire(names)
+	if ctx.Alive and signature ~= potionRefreshSignature then
+		AutoPotion.refreshEvent:Fire(names, signature)
 	end
 end
 AutoPotion.refreshOptions()
 task.spawn(function()
-	while gui.Parent do
+	while ctx.Alive and gui.Parent do
 		task.wait(5)
 		if gui.Parent then AutoPotion.refreshOptions() end
 	end

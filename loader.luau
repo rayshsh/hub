@@ -1200,6 +1200,7 @@ local function makeDropdown(parent, order, config)
 end
 
 env.AutumnDiceContext = {
+	Alive = true,
 	Players = Players, ReplicatedStorage = ReplicatedStorage, player = player,
 	State = State, CONFIG = CONFIG, TOWER_MODES = TOWER_MODES,
 	AutumnTravel = AutumnTravel,
@@ -1313,6 +1314,7 @@ end
 onChange(refreshGui)
 refreshGui()
 local function Unload()
+	if env.AutumnDiceContext then env.AutumnDiceContext.Alive = false end
 	for name, handler in pairs(FeatureHandlers) do
 		pcall(handler, false)
 		State.Features[name] = false
@@ -1347,4 +1349,4 @@ env.AutumnDice = {
 
 for _, name in ipairs({ "AntiAfk", "AutoDice" }) do
 	SetFeature(name, true)
-end
+end

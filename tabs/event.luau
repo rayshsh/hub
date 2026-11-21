@@ -844,7 +844,7 @@ local function uniqueOffers(offers)
     return unique
 end
 function AutoBuy.refreshOptions()
-	if not AutoBuy.built or not AutoBuy.dropdown then return end
+	if not ctx.Alive or not AutoBuy.built or not AutoBuy.dropdown then return end
 
 	local offers = AutoBuy.Config and AutoBuy.Config.Offers
 	AutoBuy.offers = uniqueOffers(type(offers) == "table" and offers or AutoBuy.offers)
@@ -857,6 +857,7 @@ function AutoBuy.refreshOptions()
 
 	local key = table.concat(signature, "|")
 	if key == AutoBuy.stockKey then return end
+	if not ctx.Alive then return end
 	local ok, err = pcall(AutoBuy.dropdown.SetOptions, options)
 	if not ok then
 		warn("[Auto Buy] Dropdown refresh failed: " .. tostring(err))
@@ -869,11 +870,12 @@ local refreshQueued = false
 AutoBuy.refreshEvent = Instance.new("BindableEvent")
 table.insert(connections, AutoBuy.refreshEvent.Event:Connect(function()
 	refreshQueued = false
+	if not ctx.Alive then return end
 	AutoBuy.refreshOptions()
 end))
 
 function AutoBuy.queueRefreshOptions()
-	if refreshQueued then return end
+	if not ctx.Alive or refreshQueued then return end
 	refreshQueued = true
 	AutoBuy.refreshEvent:Fire()
 end
@@ -1043,14 +1045,14 @@ end
 table.insert(refreshers, AutoBuy.refresh)
 
 task.spawn(function()
-	while gui.Parent and not AutoBuy.built do
+	while ctx.Alive and gui.Parent and not AutoBuy.built do
 		pcall(AutoBuy.build)
 		task.wait(1)
 	end
 end)
 
 task.spawn(function()
-	while gui.Parent do
+	while ctx.Alive and gui.Parent do
 		if AutoBuy.built then
 			pcall(AutoBuy.queueRefreshOptions)
 		end

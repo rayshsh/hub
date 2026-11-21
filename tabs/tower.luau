@@ -593,9 +593,23 @@ task.spawn(function()
 	end
 end)
 
-local lastSignature = nil
+local lastSignature, pendingSignature = nil, nil
+local towerOptionsEvent = Instance.new("BindableEvent")
+table.insert(ctx.connections, towerOptionsEvent.Event:Connect(function(options, signature)
+	if not ctx.Alive or pendingSignature ~= signature or not ctx.TowerUI.towerDropdown then return end
+	local ok, err = pcall(ctx.TowerUI.towerDropdown.SetOptions, options)
+	if not ok then
+		pendingSignature = nil
+		warn("[Auto Tower] Dropdown refresh failed: " .. tostring(err))
+		return
+	end
+	lastSignature, pendingSignature = signature, nil
+end))
+
 local function refreshTowerOptions()
+	if not ctx.Alive then return end
 	if not loadTowerModules() then return end
+	if not ctx.Alive then return end
 
 	local ok, all = pcall(Towers.GetAll)
 	if not ok or type(all) ~= "table" then return end
@@ -634,12 +648,13 @@ local function refreshTowerOptions()
 	end
 
 	local signature = table.concat(options, "\n")
-	if signature == lastSignature then return end
-	lastSignature = signature
+	if signature == lastSignature or signature == pendingSignature then return end
+	if not ctx.Alive then return end
+	pendingSignature = signature
 
 	Tower.names, Tower.options = names, options
 	Tower.displayByName, Tower.optionToName, Tower.catalog = displayByName, optionToName, catalog
-	ctx.TowerUI.towerDropdown.SetOptions(options)
+	towerOptionsEvent:Fire(options, signature)
 
 	if not State.SelectedTower or not table.find(names, State.SelectedTower) then
 		State.SelectedTower = names[1]
@@ -720,7 +735,7 @@ local function refreshTowerUI()
 end
 table.insert(ctx.refreshers, refreshTowerUI)
 task.spawn(function()
-	while ctx.gui.Parent do
+	while ctx.Alive and ctx.gui.Parent do
 		pcall(refreshTowerOptions)
 		pcall(refreshTowerUI)
 		task.wait(0.5)
@@ -741,5 +756,6 @@ end
 ctx.CleanupHandlers.tower = function()
 	towerRunId += 1
 	uninstallFloorHook()
+	pcall(function() towerOptionsEvent:Destroy() end)
 end
 end
