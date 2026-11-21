@@ -1,6 +1,7 @@
 return function(ctx)
 local ReplicatedStorage, State, gui = ctx.ReplicatedStorage, ctx.State, ctx.gui
-local AutoPotion = ctx.AutoPotion
+local AutoPotion = ctx.AutoPotion or {}
+ctx.AutoPotion = AutoPotion
 local addTab, makeCard, makeToggle = ctx.addTab, ctx.makeCard, ctx.makeToggle
 local create, THEME, makeDropdown = ctx.create, ctx.THEME, ctx.makeDropdown
 local POTION_CATEGORIES = {
@@ -214,6 +215,11 @@ task.spawn(function()
 	end
 end)
 makeToggle(potionBody, 4, "Auto Use", "AutoPotion")
+ctx.FeatureHandlers.AutoPotion = AutoPotion.setEnabled
+ctx.CleanupHandlers.potion = function()
+	if AutoPotion.refreshConnection then pcall(function() AutoPotion.refreshConnection:Disconnect() end) end
+	if AutoPotion.refreshEvent then pcall(function() AutoPotion.refreshEvent:Destroy() end) end
+end
 
 
 end
