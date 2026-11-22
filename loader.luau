@@ -63,7 +63,7 @@ local CONFIG = {
 local TOWER_MODES = { "Single", "Best Leaf Tower" }
 local State = {
 	Features = {
-		AutoDice = false, AutoTower = false, AutoEquipBest = false, AutoQuest = false, AutoBuy = false, AutoPotion = false,
+		AutoDice = false, AutoTower = false, AutoEquipBest = false, AutoQuest = false, AutoBuy = false, AutoPotion = false, AutoFusePotion = false,
 		AntiAfk = false, AutoReconnect = false, AutoClaimQuest = false,
 	},
 	Status = "Idle",
