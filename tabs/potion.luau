@@ -55,6 +55,30 @@ local function getFusablePotionNames()
 	return potions
 end
 
+local function getEligibleFusePotions(onlySelected, fusing, data, registry)
+	local eligible = {}
+	for _, entry in data.Inventory() do
+		if type(entry) == "table" and type(entry.name) == "string"
+			and (not onlySelected or selectedFusePotions[entry.name])
+			and (tonumber(entry.amount) or 0) >= fusing.FUSE_COST
+			and fusing.GetNextTier(entry.name) then
+			local ok, config = pcall(registry.expectEntryConfig, entry.name)
+			if ok and config and tonumber(config.tier) then
+				table.insert(eligible, {
+					name = entry.name,
+					amount = tonumber(entry.amount),
+					tier = tonumber(config.tier),
+				})
+			end
+		end
+	end
+	table.sort(eligible, function(a, b)
+		if a.tier ~= b.tier then return a.tier < b.tier end
+		return a.name < b.name
+	end)
+	return eligible
+end
+
 local function fusePotions(onlySelected, shouldContinue)
 	local features = ReplicatedStorage.Framework.Features
 	local data = loadPotionModules().data
@@ -63,37 +87,20 @@ local function fusePotions(onlySelected, shouldContinue)
 	require(features.Inventory.EntryTypes)
 	local network = require(ReplicatedStorage.Packages.Network)
 	local fuse = network.ClientComm.new(ReplicatedStorage.Network, false, "PotionFusingService"):GetFunction("Fuse")
-	local eligible = {}
-	for _, entry in data.Inventory() do
-		if type(entry) == "table" and type(entry.name) == "string" and (not onlySelected or selectedFusePotions[entry.name])
-			and (tonumber(entry.amount) or 0) >= fusing.FUSE_COST and fusing.GetNextTier(entry.name) then
-			local ok, config = pcall(registry.expectEntryConfig, entry.name)
-			if ok and config and tonumber(config.tier) then
-				table.insert(eligible, { name = entry.name, amount = tonumber(entry.amount), tier = tonumber(config.tier) })
-			end
-		end
-	end
-	table.sort(eligible, function(a, b) return a.tier == b.tier and a.name < b.name or a.tier < b.tier end)
+	local eligible = getEligibleFusePotions(onlySelected, fusing, data, registry)
 	if #eligible == 0 then return 0 end
 
 	local owner = {}
-	if not AutumnTravel.acquire(owner, shouldContinue) then return 0 end
+	if not AutumnTravel.acquire(owner, shouldContinue) then error("Could not acquire the shared travel lock.", 0) end
 	local total = 0
 	local ok, err = pcall(function()
+		if not shouldContinue() then return end
 		local arrived, travelErr = AutumnTravel.ensureInAutumnWorld(shouldContinue)
 		if not arrived then error(travelErr or "Could not enter Autumn World.", 0) end
 		local moved, moveErr = AutumnTravel.pivotToZone("PotionFusing", shouldContinue, 15)
 		if not moved then error(moveErr or "Could not reach the Potion Fuser.", 0) end
 		while shouldContinue() do
-			eligible = {}
-			for _, entry in data.Inventory() do
-				if type(entry) == "table" and type(entry.name) == "string" and (not onlySelected or selectedFusePotions[entry.name])
-					and (tonumber(entry.amount) or 0) >= fusing.FUSE_COST and fusing.GetNextTier(entry.name) then
-					local valid, config = pcall(registry.expectEntryConfig, entry.name)
-					if valid and config and tonumber(config.tier) then table.insert(eligible, {name=entry.name, amount=tonumber(entry.amount), tier=tonumber(config.tier)}) end
-				end
-			end
-			table.sort(eligible, function(a, b) return a.tier == b.tier and a.name < b.name or a.tier < b.tier end)
+			eligible = getEligibleFusePotions(onlySelected, fusing, data, registry)
 			if #eligible == 0 then break end
 			local tier, request, count = eligible[1].tier, {}, 0
 			for _, entry in ipairs(eligible) do
@@ -117,11 +124,15 @@ end
 local function runFuse(onlySelected)
 	if fuseBusy then return end
 	fuseBusy = true
-	local ok, total = pcall(fusePotions, onlySelected, function() return gui.Parent ~= nil end)
+	local ok, total = pcall(fusePotions, onlySelected, function()
+		return ctx.Alive and gui.Parent ~= nil
+	end)
 	fuseBusy = false
-	if not ok then ctx.notify("error", "Something went wrong while fusing potions.")
+	if not ok then ctx.notify("error", "Auto fuse failed: " .. tostring(total))
 	elseif total > 0 then ctx.notify("success", ("Fused %d new potions!"):format(total))
-	else ctx.notify("error", "No potions are eligible for fusing!") end
+	elseif ctx.Alive and gui.Parent then
+		ctx.notify("error", "No potions are eligible for fusing!")
+	end
 end
 
 local function setAutoFuse(enabled)
@@ -347,6 +358,7 @@ local fuseAll = create("TextButton", {
 }, { ctx.corner(8), ctx.stroke(THEME.stroke) })
 fuseAll.Activated:Connect(function() task.spawn(runFuse, false) end)
 ctx.FeatureHandlers.AutoFusePotion = setAutoFuse
+if State.Features.AutoFusePotion then setAutoFuse(true) end
 ctx.FeatureHandlers.AutoPotion = AutoPotion.setEnabled
 ctx.CleanupHandlers.potion = function()
 	if AutoPotion.refreshConnection then pcall(function() AutoPotion.refreshConnection:Disconnect() end) end
