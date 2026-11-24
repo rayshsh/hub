@@ -50,7 +50,7 @@ local function sleep(id, seconds)
 end
 
 local function failAndStop(id, message)
-	warn("[AutumnDice] " .. message)
+	warn("[RayHub] " .. message)
 	if runId == id then
 		State.Features.AutoDice = false
 		runId += 1
@@ -200,7 +200,7 @@ local function rollLoop(id, rollRemote)
 					else
 						consecutiveErrors += 1
 						local msg = ("Roll failed (%d/%d): %s"):format(consecutiveErrors, CONFIG.MaxRollErrors, tostring(result))
-						warn("[AutumnDice] " .. msg)
+						warn("[RayHub] " .. msg)
 						if consecutiveErrors >= CONFIG.MaxRollErrors then
 							failAndStop(id, msg .. " Auto Roll stopped.")
 							return
@@ -701,6 +701,7 @@ AutoBuy.token = 0
 AutoBuy.workerActive = false
 AutoBuy.loaded = false
 AutoBuy.built = false
+AutoBuy.optionsReady = false
 AutoBuy.stockKey = nil
 AutoBuy.DataController = nil
 AutoBuy.dataHooks = {}
@@ -863,7 +864,13 @@ function AutoBuy.refreshOptions()
 		warn("[Auto Buy] Dropdown refresh failed: " .. tostring(err))
 		return
 	end
+	if AutoBuy.pendingConfigSelection then
+		AutoBuy.dropdown.SetSelected(AutoBuy.pendingConfigSelection)
+		AutoBuy.selected = AutoBuy.dropdown.selected
+		AutoBuy.pendingConfigSelection = nil
+	end
 	AutoBuy.stockKey = key
+	AutoBuy.optionsReady = true
 end
 
 local refreshQueued = false
@@ -962,7 +969,7 @@ function AutoBuy.runPass(token)
     AutumnTravel.buyRequested = false
 
     if not ok and AutoBuy.alive(token) then
-        warn("[AutumnDice] Auto Buy: " .. tostring(err))
+        warn("[RayHub] Auto Buy: " .. tostring(err))
         AutoBuy.setStatus("Error: " .. tostring(err))
     end
     return bought, false
@@ -983,7 +990,7 @@ function AutoBuy.worker(token)
 			local okPass, bought, allSoldOut = pcall(AutoBuy.runPass, token)
 			if not okPass then
 				AutumnTravel.buyRequested = false
-				warn("[AutumnDice] Auto Buy error: " .. tostring(bought))
+				warn("[RayHub] Auto Buy error: " .. tostring(bought))
 				bought = false
 			end
 			if AutoBuy.alive(token) then
@@ -1040,6 +1047,20 @@ do
 		onChange = function() AutoBuy.refresh() end,
 	})
 	AutoBuy.selected = AutoBuy.dropdown.selected 
+	ctx.ConfigAdapters.appleShop = {
+		get = function()
+			return { selectedItems = AutoBuy.dropdown.GetSelected() }
+		end,
+		set = function(value)
+			if type(value) ~= "table" or type(value.selectedItems) ~= "table" then return end
+			AutoBuy.pendingConfigSelection = value.selectedItems
+			if AutoBuy.optionsReady then
+				AutoBuy.dropdown.SetSelected(AutoBuy.pendingConfigSelection)
+				AutoBuy.selected = AutoBuy.dropdown.selected
+				AutoBuy.pendingConfigSelection = nil
+			end
+		end,
+	}
 end
 
 table.insert(refreshers, AutoBuy.refresh)
@@ -1417,7 +1438,7 @@ local function rollLeafDiceActivity()
 		local traveled, travelErr = AutumnTravel.ensureInAutumnWorld(shouldContinue)
 		if not traveled then
 			setStatus("Dice: could not enter Autumn World")
-			warn("[AutumnDice] Auto Quest dice travel failed: " .. tostring(travelErr))
+			warn("[RayHub] Auto Quest dice travel failed: " .. tostring(travelErr))
 			return false
 		end
 		if not AutumnTravel.isNearZone(AutumnConfig.Zones.LeafDice, 10) then
@@ -1425,7 +1446,7 @@ local function rollLeafDiceActivity()
 			local arrived, moveErr = AutumnTravel.pivotToZone(AutumnConfig.Zones.LeafDice, shouldContinue, 10)
 			if not arrived then
 				setStatus("Dice: could not reach the Leaf Dice")
-				warn("[AutumnDice] Auto Quest dice movement failed: " .. tostring(moveErr))
+				warn("[RayHub] Auto Quest dice movement failed: " .. tostring(moveErr))
 				return false
 			end
 		end
@@ -1480,7 +1501,7 @@ local function withAutoQuestPriority(activity)
     AutumnTravel.autoQuestRequested = AutumnTravel.autoQuestRequestCount > 0
 
     if not ok then
-        warn("[AutumnDice] Auto Quest activity failed: " .. tostring(err))
+        warn("[RayHub] Auto Quest activity failed: " .. tostring(err))
     end
     return acquired and ok
 end
@@ -1492,13 +1513,13 @@ local function runQuestActivity(activity, zoneName, alwaysMove)
         end
         local traveled, travelErr = AutumnTravel.ensureInAutumnWorld(shouldContinue)
         if not traveled then
-            if shouldContinue() then warn("[AutumnDice] Auto Quest travel failed: " .. tostring(travelErr)) end
+            if shouldContinue() then warn("[RayHub] Auto Quest travel failed: " .. tostring(travelErr)) end
             return
         end
 
         local zone = AutumnTravel.findZone(zoneName)
         if not zone then
-            warn("[AutumnDice] Auto Quest zone not found: " .. tostring(zoneName))
+            warn("[RayHub] Auto Quest zone not found: " .. tostring(zoneName))
             return
         end
 
@@ -1514,14 +1535,14 @@ local function runQuestActivity(activity, zoneName, alwaysMove)
             local arrived, moveErr = AutumnTravel.pivotToZone(zoneName, shouldContinue, 10)
             if not arrived then
                 AutumnTravel.autoQuestMoving = false
-                if shouldContinue() then warn("[AutumnDice] Auto Quest movement failed: " .. tostring(moveErr)) end
+                if shouldContinue() then warn("[RayHub] Auto Quest movement failed: " .. tostring(moveErr)) end
                 return
             end
         end
 
         local ok, err = pcall(activity)
         AutumnTravel.autoQuestMoving = false
-        if not ok then warn("[AutumnDice] Auto Quest activity failed: " .. tostring(err)) end
+        if not ok then warn("[RayHub] Auto Quest activity failed: " .. tostring(err)) end
     end)
 end
 

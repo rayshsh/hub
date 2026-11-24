@@ -4,7 +4,7 @@ return function(ctx)
 	local AutoPotion = ctx.AutoPotion or {}
 	ctx.AutoPotion = AutoPotion
 	local addTab, makeCard, makeToggle = ctx.addTab, ctx.makeCard, ctx.makeToggle
-	local create, THEME, makeDropdown = ctx.create, ctx.THEME, ctx.makeDropdown
+	local create, THEME, makeDropdown, makeButton = ctx.create, ctx.THEME, ctx.makeDropdown, ctx.makeButton
 	local POTION_CATEGORIES = {
 		Luck = { buffKey = "Luck" },
 		Income = { buffKey = "Money Multiplier" },
@@ -17,6 +17,8 @@ return function(ctx)
 	local potionRefreshSignature = nil
 	local fuseBusy, fuseToken = false, 0
 	local selectedFusePotions = {}
+	local pendingPotionSelection
+	local fuseDropdown
 	local fuseNoticeEvent = Instance.new("BindableEvent")
 	local fuseNoticeConnection = fuseNoticeEvent.Event:Connect(function(kind, message)
 		if ctx.Alive then ctx.notify(kind, message) end
@@ -356,8 +358,45 @@ return function(ctx)
 		onChange = function(selected) potionSelection.names = selected end,
 	})
 	potionSelection.names = potionDropdown.selected
+	ctx.ConfigAdapters.potion = {
+		get = function()
+			return {
+				mode = potionSelection.mode,
+				category = potionSelection.category,
+				names = potionDropdown.GetSelected(),
+				fusePotions = fuseDropdown.GetSelected(),
+			}
+		end,
+		set = function(value)
+			if type(value) ~= "table" then return end
+			if value.mode == "By Category" or value.mode == "Selected" then
+				potionSelection.mode = value.mode
+				potionModeDropdown.SetValue(value.mode)
+			end
+			if POTION_CATEGORIES[value.category] then
+				potionSelection.category = value.category
+				potionCategoryDropdown.SetValue(value.category)
+			end
+			if type(value.names) == "table" then
+				pendingPotionSelection = value.names
+				if #potionDropdown.options > 0 then
+					potionDropdown.SetSelected(pendingPotionSelection)
+					potionSelection.names = potionDropdown.GetSelected()
+					pendingPotionSelection = nil
+				end
+			end
+			if type(value.fusePotions) == "table" then
+				fuseDropdown.SetSelected(value.fusePotions)
+				selectedFusePotions = fuseDropdown.GetSelected()
+			end
+		end,
+	}
 	local function applyPotionOptions(names)
 		potionDropdown.SetOptions(names)
+		if pendingPotionSelection then
+			potionDropdown.SetSelected(pendingPotionSelection)
+			pendingPotionSelection = nil
+		end
 		potionSelection.names = potionDropdown.selected
 	end
 	AutoPotion.refreshEvent = Instance.new("BindableEvent")
@@ -391,7 +430,7 @@ return function(ctx)
 	local fuseBody = makeCard(potionTab.left, function(tile)
 		create("TextLabel", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "⚗", Font = Enum.Font.GothamBold, TextSize = 14, TextColor3 = THEME.accent, Parent = tile })
 	end, "Auto Fuse Potion", 2)
-	local fuseDropdown = makeDropdown(fuseBody, 1, {
+	fuseDropdown = makeDropdown(fuseBody, 1, {
 		label = "Potions to Fuse", multi = true, searchable = true,
 		placeholder = "Select Potions...", emptyText = "No fusable potions found", maxHeight = 180,
 		onChange = function(selected) selectedFusePotions = selected end,
@@ -400,11 +439,10 @@ return function(ctx)
 	fuseDropdown.SetOptions(fuseOptions)
 	selectedFusePotions = fuseDropdown.selected
 	makeToggle(fuseBody, 2, "Auto Fuse Potion", "AutoFusePotion")
-	local fuseAll = create("TextButton", {
-		LayoutOrder = 3, Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = THEME.accentDim,
-		Text = "Fuse All Potions", Font = Enum.Font.GothamBold, TextSize = 12,
-		TextColor3 = THEME.text, AutoButtonColor = true, Parent = fuseBody,
-	}, { ctx.corner(8), ctx.stroke(THEME.stroke) })
+	local fuseAll = makeButton({
+		LayoutOrder = 3, Size = UDim2.new(1, 0, 0, 30),
+		Text = "Fuse All Potions", Parent = fuseBody,
+	})
 	fuseAll.Activated:Connect(function() task.spawn(runFuse, false) end)
 	ctx.FeatureHandlers.AutoFusePotion = setAutoFuse
 	if State.Features.AutoFusePotion then setAutoFuse(true) end

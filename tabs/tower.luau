@@ -464,7 +464,7 @@ local function towerWorker(id)
 	while towerAlive(id) do
 		local ok, err = pcall(towerTick)
 		if not ok then
-			warn("[AutumnDice] Tower error: " .. tostring(err))
+			warn("[RayHub] Tower error: " .. tostring(err))
 			SetTowerStatus("Error", tostring(err))
 		end
 
@@ -654,6 +654,12 @@ local function refreshTowerOptions()
 
 	Tower.names, Tower.options = names, options
 	Tower.displayByName, Tower.optionToName, Tower.catalog = displayByName, optionToName, catalog
+	if Tower.pendingConfigSelection then
+		if table.find(names, Tower.pendingConfigSelection) then
+			State.SelectedTower = Tower.pendingConfigSelection
+		end
+		Tower.pendingConfigSelection = nil
+	end
 	towerOptionsEvent:Fire(options, signature)
 
 	if not State.SelectedTower or not table.find(names, State.SelectedTower) then
@@ -669,7 +675,7 @@ local addTab, makeCard, makeToggle = ctx.addTab, ctx.makeCard, ctx.makeToggle
 local create, THEME, pill = ctx.create, ctx.THEME, ctx.pill
 local makeDropdown, makeLine, vlist = ctx.makeDropdown, ctx.makeLine, ctx.vlist
 ctx.TowerUI = {}
-local towerTab = addTab(3, "Auto Tower")
+local towerTab = addTab(3, "Tower")
 local towerBody = makeCard(towerTab.left, function(tile)
 	for _, rot in ipairs({ 45, -45 }) do
 		create("Frame", {
@@ -724,6 +730,22 @@ ctx.SetTowerMode = SetTowerMode
 ctx.SetSelectedTower = SetSelectedTower
 Tower.setMode = SetTowerMode
 Tower.setSelected = SetSelectedTower
+ctx.ConfigAdapters.tower = {
+	get = function()
+		return { mode = State.TowerMode, selected = State.SelectedTower }
+	end,
+	set = function(value)
+		if type(value) ~= "table" then return end
+		if table.find(TOWER_MODES, value.mode) then SetTowerMode(value.mode) end
+		if type(value.selected) == "string" then
+			if table.find(Tower.names, value.selected) then
+				SetSelectedTower(value.selected)
+			else
+				Tower.pendingConfigSelection = value.selected
+			end
+		end
+	end,
+}
 local function refreshTowerUI()
 	local S = State.TowerStats
 	local floorText = S.Floor and (" floor " .. S.Floor) or ""

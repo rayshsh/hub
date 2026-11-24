@@ -2,10 +2,14 @@ return function(ctx)
 local Players, ReplicatedStorage = ctx.Players, ctx.ReplicatedStorage
 local localPlayer = ctx.player
 local create = ctx.create
-local tab = ctx.addTab(6, "Trade")
+local makeButton = ctx.makeButton
+local tab = ctx.addTab(5, "Trade")
 local tradeBody = ctx.makeCard(tab.left, function(tile)
 	create("TextLabel", {Parent = tile, Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "⇄", Font = Enum.Font.GothamBold, TextSize = 16, TextColor3 = ctx.THEME.accent})
 end, "Trade")
+local autoAcceptBody = ctx.makeCard(tab.right, function(tile)
+	create("TextLabel", {Parent = tile, Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "✓", Font = Enum.Font.GothamBold, TextSize = 16, TextColor3 = ctx.THEME.accent})
+end, "Auto Accept Trade")
 local Framework = ReplicatedStorage:WaitForChild("Framework", 10)
 if not Framework then error("[Trade] Framework not found") end
 local TradeConfig = require(Framework.Features.Trading.TradeConfig)
@@ -26,11 +30,12 @@ if not RE then
 end
 
 local RequestTradeRE = RE:WaitForChild("RequestTrade", 10)
+local RespondToRequestRE = RE:WaitForChild("RespondToRequest", 10)
 local ChangeOfferRE = RE:WaitForChild("ChangeOffer", 10)
 local AdvanceTradeRE = RE:WaitForChild("AdvanceTrade", 10)
 local CancelTradeRE = RE:WaitForChild("CancelTrade", 10)
 local TradeEventRE = RE:WaitForChild("TradeEvent", 10)
-if not (RequestTradeRE and ChangeOfferRE and AdvanceTradeRE and CancelTradeRE and TradeEventRE) then
+if not (RequestTradeRE and RespondToRequestRE and ChangeOfferRE and AdvanceTradeRE and CancelTradeRE and TradeEventRE) then
 	error("[TradePanelTest] One or more trade RemoteEvents are missing")
 end
 
@@ -48,9 +53,14 @@ local autoSend = false -- "Auto Send at Amount" toggle
 local globalAmount = 1 -- the ONE global amount input value
 local running = false -- a trading process is active
 local stopRequested = false -- user asked to stop after the current batch
+local autoAcceptEnabled = false
+local autoAcceptUseWhitelist = false
+local autoAcceptPlayers = {} -- [Player] = true
+local autoAcceptUsernames = {} -- [lowercase username] = display username
+local autoAcceptTradeActive = false
+local recentAutoAcceptRequests = {}
 
 local lastTradeUpdate = nil -- most recent "Updated" payload from the server
-local lastEndReason = nil -- most recent "Ended" reason
 
 --------------------------------------------------------------------------------
 -- Inventory helpers
@@ -107,13 +117,13 @@ end
 
 -- Applies the priority rules to a single item:
 --   * Send Max Quantity enabled  -> the entire available quantity.
---   * Otherwise                   -> min(global amount, available quantity).
+--   * Otherwise                   -> min(the captured amount, available quantity).
 -- Never returns more than the player owns; returns 0 when unavailable.
-local function calcQuantity(available)
-	if sendMax then
+local function calcQuantity(available, amount, maxQuantity)
+	if maxQuantity then
 		return available
 	end
-	return math.min(globalAmount, available)
+	return math.min(amount, available)
 end
 
 -- Resolves the selected item names into concrete inventory keys the
@@ -122,7 +132,7 @@ end
 -- non-stackable entries are keyed by unique GUIDs (one unit each), so
 -- offering a NAME for a non-stackable item silently fails.
 -- Returns an array of { key = inventoryKey, quantity = n, name = displayName }.
-local function resolveSelectedOffers()
+local function resolveSelectedOffers(selection, amount, maxQuantity)
 	local entries = {}
 	local ok, inventory = pcall(function()
 		return DataController.Inventory()
@@ -143,7 +153,7 @@ local function resolveSelectedOffers()
 		end
 	end
 
-	for name in selectedItems do
+	for name in selection do
 		local group = byName[name]
 		if group then
 			-- Total units available for this entry name
@@ -151,7 +161,7 @@ local function resolveSelectedOffers()
 			for _, e in group do
 				total += (type(e.item.amount) == "number") and e.item.amount or 1
 			end
-			local desired = calcQuantity(total)
+			local desired = calcQuantity(total, amount, maxQuantity)
 			if desired > 0 then
 				local remaining = desired
 				for _, e in group do
@@ -210,7 +220,13 @@ local function waitForTradeEvent(expectedName, predicate, timeout)
 
 	local deadline = os.clock() + timeout
 	while result == nil and os.clock() < deadline do
-		if requestClosedAt and os.clock() > requestClosedAt + REQUEST_CLOSED_GRACE then
+		if not ctx.Alive then
+			result = false
+			failReason = "Script unloaded"
+		elseif stopRequested then
+			result = false
+			failReason = "Stopped by user"
+		elseif requestClosedAt and os.clock() > requestClosedAt + REQUEST_CLOSED_GRACE then
 			result = false
 			failReason = "Trade request was declined or closed"
 		else
@@ -232,8 +248,6 @@ end
 table.insert(ctx.connections, TradeEventRE.OnClientEvent:Connect(function(name, data)
 	if name == "Updated" then
 		lastTradeUpdate = data
-	elseif name == "Ended" then
-		lastEndReason = data and data.reason
 	end
 end))
 
@@ -285,19 +299,21 @@ itemDropdown = makeDropdown(tradeBody, 2, {
 
 local amountBox = makeInput(tradeBody, 3, "Amount per item", "1", "Enter amount")
 
-local sendButton = create("TextButton", {
+local sendButton = makeButton({
 	LayoutOrder = 7,
 	Parent = tradeBody,
 	Size = UDim2.new(1, 0, 0, 32),
-	BackgroundColor3 = THEME.accent,
-	TextColor3 = THEME.text,
-	Font = Enum.Font.GothamBold,
-	TextSize = 13,
 	Text = "Send Trade",
-	AutoButtonColor = true,
-}, {ctx.corner(8), ctx.stroke(THEME.stroke)})
+})
 
-local statusLabel = makeLine(tradeBody, 8, 12, THEME.body)
+local stopButton = makeButton({
+	LayoutOrder = 8,
+	Parent = tradeBody,
+	Size = UDim2.new(1, 0, 0, 32),
+	Text = "Stop",
+})
+
+local statusLabel = makeLine(tradeBody, 9, 12, THEME.body)
 statusLabel.Text = "Recipient: None\nItems: 0 (Amount 1)\nStatus: Idle."
 
 local function refreshItemOptions()
@@ -331,6 +347,31 @@ local function sanitizeAmount()
 	amountBox.Text = tostring(value)
 end
 amountBox.FocusLost:Connect(sanitizeAmount)
+ctx.ConfigAdapters.trade = {
+	get = function()
+		return {
+			recipient = selectedPlayer and selectedPlayer.Name or nil,
+			items = itemDropdown.GetSelected(),
+			amount = globalAmount,
+		}
+	end,
+	set = function(value)
+		if type(value) ~= "table" then return end
+		if type(value.recipient) == "string" then
+			selectedPlayer = Players:FindFirstChild(value.recipient)
+			playerDropdown.SetValue(selectedPlayer and selectedPlayer.Name or nil)
+		end
+		if type(value.items) == "table" then
+			itemDropdown.SetSelected(value.items)
+			selectedItems = itemDropdown.GetSelected()
+		end
+		if type(value.amount) == "number" and value.amount >= 1 and value.amount <= 1000000 then
+			globalAmount = math.floor(value.amount)
+			amountBox.Text = tostring(globalAmount)
+		end
+		if setStatus then setStatus("Configuration applied.") end
+	end,
+}
 
 local function updateStatusLabel(message)
 	local selectedItemCount = 0
@@ -347,6 +388,209 @@ setStatus = updateStatusLabel
 
 makeToggle(tradeBody, 5, "Send Max Quantity", "TradeSendMax")
 makeToggle(tradeBody, 6, "Auto Send at Amount", "TradeAutoSend")
+
+local autoAcceptDropdown
+
+local function getAutoAcceptPlayerNames()
+	local names = {}
+	for player in pairs(autoAcceptPlayers) do
+		if player.Parent == Players then names[player.Name] = true end
+	end
+	return names
+end
+
+autoAcceptDropdown = makeDropdown(autoAcceptBody, 1, {
+	label = "Auto-accept from",
+	placeholder = "Select players...",
+	searchable = true,
+	multi = true,
+	actions = true,
+	emptyText = "No players found",
+	maxHeight = 180,
+	onChange = function(selected)
+		autoAcceptPlayers = {}
+		for name, isSelected in pairs(selected) do
+			local player = isSelected and Players:FindFirstChild(name)
+			if player and player ~= localPlayer then autoAcceptPlayers[player] = true end
+		end
+	end,
+})
+makeToggle(autoAcceptBody, 2, "Auto Accept Trade", "AutoAcceptTrade")
+makeToggle(autoAcceptBody, 3, "Use whitelist", "AutoAcceptUseWhitelist")
+
+local usernameInput = makeInput(autoAcceptBody, 4, "Add username", "", "Type username and press Enter")
+local selectedSavedWhitelistName
+local savedWhitelistDropdown = makeDropdown(autoAcceptBody, 5, {
+	label = "Whitelisted",
+	placeholder = "Choose a username...",
+	searchable = true,
+	emptyText = "No saved usernames",
+	maxHeight = 140,
+	onSelect = function(name)
+		selectedSavedWhitelistName = name
+	end,
+})
+local removeSavedWhitelistButton = makeButton({
+	LayoutOrder = 6,
+	Parent = autoAcceptBody,
+	Size = UDim2.new(1, 0, 0, 32),
+	Text = "Removed Picked",
+})
+
+local function normalizeWhitelistUsername(value)
+	if type(value) ~= "string" then return nil end
+	local name = value:match("^%s*(.-)%s*$")
+	if #name < 3 or #name > 20 or not name:match("^[%w_]+$") then return nil end
+	return name
+end
+
+local function refreshSavedWhitelistOptions()
+	local names = {}
+	for _, name in pairs(autoAcceptUsernames) do table.insert(names, name) end
+	table.sort(names, function(a, b) return string.lower(a) < string.lower(b) end)
+	savedWhitelistDropdown.SetOptions(names)
+	if selectedSavedWhitelistName and not autoAcceptUsernames[string.lower(selectedSavedWhitelistName)] then
+		selectedSavedWhitelistName = nil
+		savedWhitelistDropdown.SetValue(nil)
+	end
+end
+refreshSavedWhitelistOptions()
+
+usernameInput.FocusLost:Connect(function(enterPressed)
+	if not enterPressed then return end
+	local name = normalizeWhitelistUsername(usernameInput.Text)
+	if not name then return end
+	autoAcceptUsernames[string.lower(name)] = name
+	usernameInput.Text = ""
+	refreshSavedWhitelistOptions()
+	ctx.markConfigDirty("autoAcceptTrade")
+end)
+
+removeSavedWhitelistButton.MouseButton1Click:Connect(function()
+	if not selectedSavedWhitelistName then return end
+	autoAcceptUsernames[string.lower(selectedSavedWhitelistName)] = nil
+	selectedSavedWhitelistName = nil
+	savedWhitelistDropdown.SetValue(nil)
+	refreshSavedWhitelistOptions()
+	ctx.markConfigDirty("autoAcceptTrade")
+end)
+
+local function refreshAutoAcceptPlayerOptions()
+	if not ctx.Alive then return end
+	local options = {}
+	for _, player in Players:GetPlayers() do
+		if player ~= localPlayer then
+			table.insert(options, {key = player.Name, label = player.DisplayName .. " (" .. player.Name .. ")"})
+		end
+	end
+	table.sort(options, function(a, b) return a.label < b.label end)
+	autoAcceptDropdown.SetOptions(options)
+	autoAcceptDropdown.SetSelected(getAutoAcceptPlayerNames())
+	local valid = {}
+	for player in pairs(autoAcceptPlayers) do
+		if player.Parent == Players then valid[player] = true end
+	end
+	autoAcceptPlayers = valid
+end
+
+refreshAutoAcceptPlayerOptions()
+table.insert(ctx.connections, Players.PlayerAdded:Connect(refreshAutoAcceptPlayerOptions))
+table.insert(ctx.connections, Players.PlayerRemoving:Connect(function(player)
+	autoAcceptPlayers[player] = nil
+	recentAutoAcceptRequests[player] = nil
+	refreshAutoAcceptPlayerOptions()
+end))
+
+ctx.ConfigAdapters.autoAcceptTrade = {
+	get = function()
+		local usernames = {}
+		for key, name in pairs(autoAcceptUsernames) do usernames[key] = name end
+		return {players = getAutoAcceptPlayerNames(), usernames = usernames}
+	end,
+	set = function(value)
+		if type(value) ~= "table" then return end
+		if type(value.players) == "table" then
+			autoAcceptDropdown.SetSelected(value.players)
+			autoAcceptPlayers = {}
+			for name, isSelected in pairs(value.players) do
+				local player = isSelected and Players:FindFirstChild(name)
+				if player and player ~= localPlayer then autoAcceptPlayers[player] = true end
+			end
+		end
+		if type(value.usernames) == "table" then
+			autoAcceptUsernames = {}
+			for _, rawName in pairs(value.usernames) do
+				local name = normalizeWhitelistUsername(rawName)
+				if name then autoAcceptUsernames[string.lower(name)] = name end
+			end
+			selectedSavedWhitelistName = nil
+			savedWhitelistDropdown.SetValue(nil)
+			refreshSavedWhitelistOptions()
+		end
+	end,
+}
+
+ctx.FeatureHandlers.AutoAcceptTrade = function(enabled)
+	autoAcceptEnabled = enabled
+end
+ctx.FeatureHandlers.AutoAcceptUseWhitelist = function(enabled)
+	autoAcceptUseWhitelist = enabled
+end
+
+local function manageAutoAcceptedTrade(sender)
+	local started = waitForTradeEvent("Started", function(data)
+		return data and data.partner == sender
+	end, 15)
+	if not started then return end
+
+	local readyFired, acceptedFired = false, false
+	local function handleTradeUpdate(data)
+		if type(data) ~= "table" or not data.phase then return end
+		if data.phase == "Offer" and data.otherReady == true and not readyFired then
+			readyFired = true
+			AdvanceTradeRE:FireServer()
+		elseif data.phase == "Confirm" and data.otherAccepted == true and not acceptedFired then
+			acceptedFired = true
+			AdvanceTradeRE:FireServer()
+		elseif data.phase == "Offer" and (readyFired or acceptedFired) then
+			readyFired, acceptedFired = false, false
+		end
+	end
+	local updateConnection = TradeEventRE.OnClientEvent:Connect(function(name, data)
+		if name == "Updated" then handleTradeUpdate(data) end
+	end)
+	-- The sender can ready up before this listener is attached after Started.
+	handleTradeUpdate(lastTradeUpdate)
+
+	local ended = waitForTradeEvent("Ended", nil, 300)
+	updateConnection:Disconnect()
+	return ended ~= nil
+end
+
+table.insert(ctx.connections, TradeEventRE.OnClientEvent:Connect(function(name, data)
+	if name ~= "RequestReceived" or not autoAcceptEnabled then return end
+	local sender = data and data.player
+	if typeof(sender) ~= "Instance" or not sender:IsA("Player") then return end
+	if autoAcceptTradeActive or running then return end
+	local allowed = autoAcceptUseWhitelist
+		and autoAcceptUsernames[string.lower(sender.Name)] ~= nil
+		or (not autoAcceptUseWhitelist and autoAcceptPlayers[sender] == true)
+	if not allowed then return end
+	local now = os.clock()
+	if recentAutoAcceptRequests[sender] and now - recentAutoAcceptRequests[sender] < 1 then return end
+	recentAutoAcceptRequests[sender] = now
+	autoAcceptTradeActive = true
+	lastTradeUpdate = nil
+	local ok = pcall(function() RespondToRequestRE:FireServer(true) end)
+	if not ok then
+		autoAcceptTradeActive = false
+		return
+	end
+	task.spawn(function()
+		pcall(manageAutoAcceptedTrade, sender)
+		autoAcceptTradeActive = false
+	end)
+end))
 
 --------------------------------------------------------------------------------
 -- Trading process (shared by manual Send Trade and Auto Send)
@@ -403,14 +647,19 @@ local function runTradeProcess()
 		return
 	end
 
-	-- Outer loop: with Auto Send on, a fully completed pass does NOT stop
-	-- the process. It loops back to the waiting phase below and starts a new
-	-- pass. Each pass rebuilds the batch plan dynamically from the CURRENT
-	-- selection and live inventory, so the number of batches always reflects
-	-- what is selected and available at that moment (e.g. 3/3 one pass,
-	-- 7/7 the next). Quantities are also recalculated per batch from the
-	-- live inventory. It only stops when the toggle is turned off, the user
-	-- stops it, or the recipient disconnects.
+	-- Outer loop: with Auto Send on, each completed pass returns to monitoring.
+	-- A later pass can start only when selected inventory grows beyond the
+	-- post-cycle baseline while still meeting the amount threshold. Each pass
+	-- rebuilds the batch plan from the current selection and inventory, so
+	-- the number of batches reflects what is selected and available (e.g. 3/3,
+	-- 7/7 the next). Selection and intended quantities are captured once per
+	-- cycle; live inventory can only cap a captured offer to what is still
+	-- owned and cannot add new keys to an active cycle.
+	-- It stops when the toggle is turned off, the user stops it, or the
+	-- recipient disconnects.
+	-- Snapshot quantities after a cycle so only newly acquired inventory can
+	-- trigger another automatic cycle. The first cycle has no baseline.
+	local postCycleBaseline = nil
 	while true do
 
 	-- ---- Auto Send at Amount: wait for the amount to be met ----------
@@ -432,10 +681,9 @@ local function runTradeProcess()
 				return
 			end
 			local available = getAvailableAmounts()
-			-- Trigger threshold: with Send Max Quantity enabled, any available
-			-- quantity counts; otherwise at least ONE selected item must have
-			-- available >= the entered amount.
-			local required = sendMax and 1 or globalAmount
+			-- Amount remains the eligibility threshold in both modes. Send Max
+			-- changes only the quantity offered after a cycle starts.
+			local required = globalAmount
 			local met = false
 			local best = 0
 			for key in selectedItems do
@@ -443,7 +691,8 @@ local function runTradeProcess()
 				if have > best then
 					best = have
 				end
-				if have >= required then
+				local baselineHave = postCycleBaseline and (postCycleBaseline[key] or 0) or 0
+				if have >= required and have > baselineHave then
 					met = true
 					break
 				end
@@ -452,8 +701,10 @@ local function runTradeProcess()
 				break
 			end
 			setStatus(string.format(
-				"Auto Send: waiting... need any selected item >= %d (best so far: %d).",
-				required, best
+				"Auto Send: waiting... need a selected item >= %d%s (best so far: %d).",
+				required,
+				postCycleBaseline and " with new items gained since the last cycle" or "",
+				best
 			))
 			task.wait(1)
 		end
@@ -479,11 +730,15 @@ local function runTradeProcess()
 
 	-- Resolve the selected names into concrete inventory keys (names for
 	-- stackable entries, GUIDs for non-stackable ones) before batching.
-	local offers = resolveSelectedOffers()
+	local cycleSelection = {}
+	for _, name in ipairs(selectedNames) do cycleSelection[name] = true end
+	local cycleAmount, cycleSendMax = globalAmount, sendMax
+	local offers = resolveSelectedOffers(cycleSelection, cycleAmount, cycleSendMax)
 	if #offers == 0 then
 		if autoSend and not stopRequested then
-			-- Nothing available right now; go back to the waiting phase
-			-- instead of stopping the Auto Send process.
+			-- Refresh the baseline to current inventory so future gains can
+			-- trigger a cycle even if availability changed while waiting.
+			postCycleBaseline = getAvailableAmounts()
 			continue
 		end
 		setStatus("None of the selected items are currently in your inventory.")
@@ -517,7 +772,7 @@ local function runTradeProcess()
 			setStatus("Stopped by user after " .. completedBatches .. "/" .. totalBatches .. " batches.")
 			return
 		end
-		if selectedPlayer.Parent ~= Players then
+		if selectedPlayer == nil or selectedPlayer.Parent ~= Players then
 			setStatus("Recipient disconnected. Stopped after " .. completedBatches .. "/" .. totalBatches .. " batches.")
 			return
 		end
@@ -528,7 +783,8 @@ local function runTradeProcess()
 			batchIndex, totalBatches, completedBatches, remaining
 		))
 
-		-- ---- Recalculate quantities from the freshest inventory ----------
+		-- The batch plan is fixed for this cycle. Cap each captured quantity
+		-- against current ownership so inventory changes cannot expand it.
 		local okInv, freshInventory = pcall(function()
 			return DataController.Inventory()
 		end)
@@ -539,40 +795,46 @@ local function runTradeProcess()
 		for _, offer in batch do
 			local item = fresh[offer.key]
 			if type(item) == "table" then
-				local amt = (type(item.amount) == "number") and item.amount or 1
-				local quantity = math.min(offer.quantity, amt)
+				local available = (type(item.amount) == "number") and item.amount or 1
+				local quantity = math.min(offer.quantity, available)
 				if quantity > 0 then
 					expected[offer.key] = quantity
-				displayNames[offer.key] = offer.name
+					displayNames[offer.key] = offer.name
 					offeredCount += 1
 				end
 			end
 		end
 
 		if offeredCount == 0 then
-			-- Every item in this batch became unavailable; skip it safely
 			completedBatches += 1
 			setStatus(string.format(
-				"Batch %d/%d skipped (items no longer available).",
+				"Batch %d/%d skipped (items are no longer available).",
 				batchIndex, totalBatches
 			))
 			task.wait(1)
 			batchIndex += 1
 			continue
 		end
+		if selectedPlayer == nil or selectedPlayer.Parent ~= Players then
+			setStatus("Recipient disconnected. Stopped after " .. completedBatches .. "/" .. totalBatches .. " batches.")
+			selectedPlayer = nil
+			playerDropdown.SetValue(nil)
+			return
+		end
+		local recipient = selectedPlayer
+		local recipientName = recipient.Name
 
 		-- ---- Initiate the trade ------------------------------------------
 		lastTradeUpdate = nil
-		lastEndReason = nil
-		RequestTradeRE:FireServer(selectedPlayer)
+		RequestTradeRE:FireServer(recipient)
 
 		-- Phase 1: confirm the server actually sent the request
 		setStatus(string.format(
 			"Batch %d/%d | Sending trade request to %s...",
-			batchIndex, totalBatches, selectedPlayer.Name
+			batchIndex, totalBatches, recipientName
 		))
 		local sent, sentErr = waitForTradeEvent("RequestSent", function(data)
-			return data and data.player == selectedPlayer
+			return data and data.player == recipient
 		end, 10)
 		if not sent then
 			if failBatch("Batch " .. batchIndex .. " failed: " .. (sentErr or "trade request was not sent")) then
@@ -586,10 +848,10 @@ local function runTradeProcess()
 		-- RequestClosed message aborts the wait here.
 		setStatus(string.format(
 			"Batch %d/%d | Waiting for %s to accept the trade request...",
-			batchIndex, totalBatches, selectedPlayer.Name
+			batchIndex, totalBatches, recipientName
 		))
 		local started, startErr = waitForTradeEvent("Started", function(data)
-			return data and data.partner == selectedPlayer
+			return data and data.partner == recipient
 		end, 30)
 		if not started then
 			if failBatch("Batch " .. batchIndex .. " failed: " .. (startErr or "recipient did not accept the trade request")) then
@@ -633,6 +895,11 @@ local function runTradeProcess()
 			-- The server debounces ChangeOffer at 0.1s per player; wait
 			-- slightly longer so no call is silently dropped.
 			task.wait(0.15)
+		end
+		if stopRequested then
+			CancelTradeRE:FireServer()
+			setStatus("Stopped by user during batch " .. batchIndex .. "/" .. totalBatches .. "; trade cancelled cleanly.")
+			return
 		end
 
 		-- Let the server process the offer changes and report its state,
@@ -738,11 +1005,12 @@ local function runTradeProcess()
 
 	setStatus("All " .. totalBatches .. " batch(es) completed. " .. offersCount .. " offer entries traded.")
 
-	-- Auto Send still on: do not stop here. Loop back to the waiting
-	-- phase and keep sending trade requests as items become available.
 	if not autoSend or stopRequested then
 		break
 	end
+	-- Record the completed cycle's inventory. Only quantities acquired after
+	-- this point can trigger another Auto Send cycle.
+	postCycleBaseline = getAvailableAmounts()
 	end -- while true (Auto Send outer loop)
 end
 
@@ -769,6 +1037,15 @@ end
 
 sendButton.MouseButton1Click:Connect(function()
 	if not running then task.spawn(startTradeProcess) end
+end)
+
+stopButton.MouseButton1Click:Connect(function()
+	if not running then
+		setStatus("Nothing is currently running.")
+		return
+	end
+	stopRequested = true
+	setStatus("Stop requested. Aborting the current step...")
 end)
 
 ctx.FeatureHandlers.TradeSendMax = function(enabled)

@@ -2,6 +2,8 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 
+local SCRIPT_NAME = "RayHub"
+local SESSION_STARTED_AT = os.clock()
 local STARTUP_DELAY = 6   
 do
 	if not game:IsLoaded() then game.Loaded:Wait() end
@@ -30,8 +32,8 @@ end
 local player = Players.LocalPlayer
 local env = (getgenv and getgenv()) or _G
 
-if env.AutumnDice and env.AutumnDice.Unload then
-	pcall(env.AutumnDice.Unload)
+if env.RayHub and env.RayHub.Unload then
+	pcall(env.RayHub.Unload)
 end
 
 local CONFIG = {
@@ -67,7 +69,10 @@ local State = {
 		AutoTraitReroll = false, TraitRerollEventOnly = false,
 		AutoGradeReroll = false, GradeRerollEventOnly = false, AutoQuirkReroll = false,
 		AutoUnitsFuse = false, SkipFuseAnimation = false,
-		TradeSendMax = false, TradeAutoSend = false,
+		TradeSendMax = false, TradeAutoSend = false, AutoAcceptTrade = false, AutoAcceptUseWhitelist = false,
+		ConfigsAutosave = false,
+		ConfigsPerAccount = false,
+		AutoExecute = env.RayHubAutoExecuteEnabled == true,
 		AntiAfk = false, AutoReconnect = false, AutoClaimQuest = false,
 	},
 	Status = "Idle",
@@ -301,6 +306,10 @@ end
 
 
 local FeatureHandlers, CleanupHandlers = {}, {}
+local configDirtyHandler
+local function markConfigDirty(name)
+	if configDirtyHandler then pcall(configDirtyHandler, name) end
+end
 local function SetFeature(name, value)
 	if State.Features[name] == nil then return end
 	value = value and true or false
@@ -309,6 +318,7 @@ local function SetFeature(name, value)
 	local handler = FeatureHandlers[name]
 	if handler then handler(value) end
 	notify()
+	markConfigDirty(name)
 end
 local function GetFeature(name)
 	return State.Features[name]
@@ -393,6 +403,29 @@ local THEME = {
 	knobOff = Color3.fromRGB(150, 152, 162),
 }
 
+local function makeButton(props, children, decorated)
+	local buttonProps = {
+		BackgroundColor3 = THEME.field,
+		AutoButtonColor = true,
+		TextColor3 = THEME.text,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 12,
+	}
+	for key, value in pairs(props or {}) do buttonProps[key] = value end
+	local size = buttonProps.Size
+	if typeof(size) == "UDim2" and size.Y.Scale == 0 and size.Y.Offset > 24 then
+		buttonProps.Size = UDim2.new(size.X.Scale, size.X.Offset, 0, 24)
+	end
+	local buttonChildren = {}
+	if decorated ~= false then
+		table.insert(buttonChildren, corner(8))
+		table.insert(buttonChildren, stroke(THEME.stroke))
+		table.insert(buttonChildren, pad(0, 1, 0, 1))
+	end
+	for _, child in ipairs(children or {}) do table.insert(buttonChildren, child) end
+	return create("TextButton", buttonProps, buttonChildren)
+end
+
 local function resolveParent()
 	local ok, parent = pcall(function()
 		if gethui then return gethui() end
@@ -403,7 +436,7 @@ local function resolveParent()
 end
 
 local gui = create("ScreenGui", {
-	Name = "AutumnDiceAutoRoll",
+	Name = "RayHubAutoRoll",
 	ResetOnSpawn = false,
 	IgnoreGuiInset = true, 
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
@@ -413,6 +446,17 @@ if not gui.Parent then gui.Parent = player:WaitForChild("PlayerGui") end
 
 local connections = {}
 local refreshers = {}
+local modalOverlays = {}
+
+local mainBackdrop = create("Frame", {
+	Name = "MainBackdrop",
+	Size = UDim2.fromScale(1, 1),
+	BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+	BackgroundTransparency = 0.45,
+	BorderSizePixel = 0,
+	ZIndex = 1,
+	Parent = gui,
+})
 
 local main = create("Frame", {
 	Name = "Main",
@@ -438,21 +482,21 @@ create("TextLabel", {
 	Size = UDim2.new(1, -36, 1, 0),
 	Position = UDim2.fromOffset(4, 0),
 	BackgroundTransparency = 1,
-	Text = "Autumn Dice",
+	Text = "Ray Hub",
 	Font = Enum.Font.GothamBold,
 	TextSize = 11,
 	TextColor3 = THEME.subtext,
 	TextXAlignment = Enum.TextXAlignment.Left,
 	Parent = titleBar,
 })
-local closeBtn = create("TextButton", {
+local closeBtn = makeButton({
 	Size = UDim2.fromOffset(20, 20),
 	Position = UDim2.new(1, -20, 0.5, -10),
 	BackgroundColor3 = THEME.field,
 	Text = "",
 	AutoButtonColor = true,
 	Parent = titleBar,
-}, { corner(8) })
+})
 for _, rot in ipairs({ 45, -45 }) do
 	create("Frame", {
 		AnchorPoint = Vector2.new(0.5, 0.5),
@@ -467,7 +511,7 @@ end
 
 local openDropdown = nil
 
-local catcher = create("TextButton", {
+local catcher = makeButton({
 	Size = UDim2.fromScale(1, 1),
 	BackgroundTransparency = 1,
 	Text = "",
@@ -475,7 +519,7 @@ local catcher = create("TextButton", {
 	Visible = false,
 	ZIndex = 15,
 	Parent = gui,
-})
+}, nil, false)
 
 local function closeDropdowns()
 	if openDropdown then
@@ -485,6 +529,187 @@ local function closeDropdowns()
 	catcher.Visible = false
 end
 catcher.MouseButton1Click:Connect(closeDropdowns)
+
+local function makeModal()
+	local overlay = makeButton({
+		Name = "ModalBackdrop",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+		BackgroundTransparency = 0.4,
+		Text = "",
+		AutoButtonColor = false,
+		Visible = false,
+		ZIndex = 200,
+		Parent = gui,
+	}, nil, false)
+	local panel = create("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.new(0.8, 0, 0, 148),
+		BackgroundColor3 = THEME.card,
+		BorderSizePixel = 0,
+		ZIndex = 201,
+		Parent = overlay,
+	}, { corner(12), stroke(THEME.stroke), pad(12, 10, 12, 10), vlist(8) })
+	create("UISizeConstraint", {
+		MinSize = Vector2.new(260, 148),
+		MaxSize = Vector2.new(360, 148),
+		Parent = panel,
+	})
+	local title = create("TextLabel", {
+		LayoutOrder = 1,
+		Size = UDim2.new(1, 0, 0, 22),
+		BackgroundTransparency = 1,
+		Text = "Confirm",
+		Font = Enum.Font.GothamBold,
+		TextSize = 15,
+		TextColor3 = THEME.text,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		ZIndex = 202,
+		Parent = panel,
+	})
+	local message = create("TextLabel", {
+		LayoutOrder = 2,
+		Size = UDim2.new(1, 0, 0, 48),
+		BackgroundTransparency = 1,
+		Text = "Are you sure?",
+		Font = Enum.Font.Gotham,
+		TextSize = 12,
+		TextColor3 = THEME.body,
+		TextWrapped = true,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		ZIndex = 202,
+		Parent = panel,
+	})
+	local buttonRow = create("Frame", {
+		LayoutOrder = 3,
+		Size = UDim2.new(1, 0, 0, 24),
+		BackgroundTransparency = 1,
+		ZIndex = 202,
+		Parent = panel,
+	})
+	local confirmButton = makeButton({
+		Position = UDim2.new(0, 0, 0, 0),
+		Size = UDim2.new(0.5, -4, 1, 0),
+		Text = "Confirm",
+		ZIndex = 203,
+		Parent = buttonRow,
+	})
+	local cancelButton = makeButton({
+		Position = UDim2.new(0.5, 4, 0, 0),
+		Size = UDim2.new(0.5, -4, 1, 0),
+		Text = "Cancel",
+		ZIndex = 203,
+		Parent = buttonRow,
+	})
+	local onConfirm, onCancel
+	local modal = {}
+	function modal.Hide()
+		overlay.Visible = false
+		onConfirm, onCancel = nil, nil
+	end
+	function modal.Show(options)
+		options = options or {}
+		title.Text = options.title or "Confirm"
+		message.Text = options.message or "Are you sure?"
+		confirmButton.Text = options.confirmText or "Confirm"
+		cancelButton.Text = options.cancelText or "Cancel"
+		onConfirm, onCancel = options.onConfirm, options.onCancel
+		overlay.Visible = true
+	end
+	confirmButton.Activated:Connect(function()
+		local callback = onConfirm
+		modal.Hide()
+		if callback then callback() end
+	end)
+	cancelButton.Activated:Connect(function()
+		local callback = onCancel
+		modal.Hide()
+		if callback then callback() end
+	end)
+	overlay.Activated:Connect(function()
+		local callback = onCancel
+		modal.Hide()
+		if callback then callback() end
+	end)
+	table.insert(modalOverlays, modal)
+	return modal
+end
+
+local function setMainVisible(visible)
+	main.Visible = visible
+	mainBackdrop.Visible = visible
+	if not visible then
+		closeDropdowns()
+		for _, modal in ipairs(modalOverlays) do modal.Hide() end
+	end
+end
+
+local function toggleMainVisible()
+	setMainVisible(not main.Visible)
+end
+
+local function formatSessionTime()
+	local elapsed = math.floor(os.clock() - SESSION_STARTED_AT)
+	local hours = math.floor(elapsed / 3600)
+	local minutes = math.floor(elapsed / 60) % 60
+	local seconds = elapsed % 60
+	return string.format("%02d:%02d:%02d", hours, minutes, seconds)
+end
+
+local floatingButton = makeButton({
+	Name = "SessionToggle",
+	AnchorPoint = Vector2.new(0.5, 0),
+	Position = UDim2.new(0.5, 0, 0.1, 0),
+	Size = UDim2.fromOffset(176, 30),
+	Text = "",
+	ZIndex = 100,
+	Parent = gui,
+})
+local floatingIcon = create("TextLabel", {
+	Position = UDim2.new(0, 8, 0.5, -7),
+	Size = UDim2.fromOffset(14, 14),
+	BackgroundColor3 = THEME.accent,
+	Text = "R",
+	Font = Enum.Font.GothamBold,
+	TextSize = 9,
+	TextColor3 = THEME.text,
+	ZIndex = 101,
+	Parent = floatingButton,
+}, { pill() })
+local floatingName = create("TextLabel", {
+	Position = UDim2.new(0, 29, 0, 0),
+	Size = UDim2.new(0, 46, 1, 0),
+	BackgroundTransparency = 1,
+	Text = SCRIPT_NAME,
+	Font = Enum.Font.GothamBold,
+	TextSize = 11,
+	TextColor3 = THEME.text,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	ZIndex = 101,
+	Parent = floatingButton,
+})
+local sessionTimer = create("TextLabel", {
+	AnchorPoint = Vector2.new(1, 0),
+	Position = UDim2.new(1, -9, 0, 0),
+	Size = UDim2.new(0, 86, 1, 0),
+	BackgroundTransparency = 1,
+	Text = "00:00:00",
+	Font = Enum.Font.GothamMedium,
+	TextSize = 10,
+	TextColor3 = THEME.subtext,
+	TextXAlignment = Enum.TextXAlignment.Right,
+	ZIndex = 101,
+	Parent = floatingButton,
+})
+floatingButton.Activated:Connect(toggleMainVisible)
+task.spawn(function()
+	while gui.Parent do
+		sessionTimer.Text = formatSessionTime()
+		task.wait(0.25)
+	end
+end)
 
 
 local SIDEBAR_GAP = 8
@@ -505,7 +730,7 @@ local sidebar = create("ScrollingFrame", {
 	AutomaticCanvasSize = Enum.AutomaticSize.Y,
 	CanvasSize = UDim2.new(),
 	Parent = bodyRow,
-}, { corner(10), stroke(THEME.stroke), pad(6, 6, 6, 6), vlist(4) })
+}, { corner(10), stroke(THEME.stroke), pad(6, 8, 6, 8), vlist(8) })
 
 local content = create("ScrollingFrame", {
 	Position = UDim2.fromOffset(208 + SIDEBAR_GAP, 0),
@@ -630,7 +855,7 @@ local function selectTab(name)
 end
 
 local function addTab(order, name)
-	local button = create("TextButton", {
+	local button = makeButton({
 		LayoutOrder = order,
 		Size = UDim2.new(1, 0, 0, 28),
 		BackgroundColor3 = THEME.accentDim,
@@ -638,7 +863,8 @@ local function addTab(order, name)
 		Text = "",
 		AutoButtonColor = false,
 		Parent = sidebar,
-	}, { corner(8) })
+	}, nil, false)
+	button.Size = UDim2.new(1, 0, 0, 36)
 	local bar = create("Frame", {
 		Size = UDim2.fromOffset(3, 14),
 		Position = UDim2.new(0, 0, 0.5, -7),
@@ -687,14 +913,14 @@ local function makeCard(parent, buildIcon, title, order)
 		vlist(8),
 	})
 
-	local header = create("TextButton", {
+	local header = makeButton({
 		LayoutOrder = 1,
 		Size = UDim2.new(1, 0, 0, 26),
 		BackgroundTransparency = 1,
 		Text = "",
 		AutoButtonColor = false,
 		Parent = card,
-	})
+	}, nil, false)
 	local tile = create("Frame", {
 		Size = UDim2.fromOffset(26, 26),
 		BackgroundColor3 = THEME.accentDim,
@@ -721,7 +947,7 @@ local function makeCard(parent, buildIcon, title, order)
 		AutomaticSize = Enum.AutomaticSize.Y,
 		BackgroundTransparency = 1,
 		Parent = card,
-	}, { vlist(8) })
+	}, { vlist(4) })
 
 	header.MouseButton1Click:Connect(function()
 		closeDropdowns()
@@ -766,7 +992,7 @@ local function makeInput(parent, order, labelText, initialText, placeholder)
 		TextXAlignment = Enum.TextXAlignment.Left,
 		Parent = row,
 	})
-	return create("TextBox", {
+	local input = create("TextBox", {
 		Position = UDim2.new(0, 150, 0, 0),
 		Size = UDim2.new(1, -150, 1, 0),
 		BackgroundColor3 = THEME.field,
@@ -780,17 +1006,19 @@ local function makeInput(parent, order, labelText, initialText, placeholder)
 		ClearTextOnFocus = false,
 		Parent = row,
 	}, { corner(8), pad(8, 0, 8, 0) })
+	input.FocusLost:Connect(markConfigDirty)
+	return input
 end
 
 local function makeToggle(parent, order, labelText, featureName)
-	local row = create("TextButton", {
+	local row = makeButton({
 		LayoutOrder = order,
 		Size = UDim2.new(1, 0, 0, 22),
 		BackgroundTransparency = 1,
 		Text = "",
 		AutoButtonColor = false,
 		Parent = parent,
-	})
+	}, nil, false)
 	create("TextLabel", {
 		Size = UDim2.new(1, -46, 1, 0),
 		BackgroundTransparency = 1,
@@ -866,14 +1094,14 @@ local function makeDropdown(parent, order, config)
 		Visible = config.label ~= nil,
 		Parent = wrap,
 	})
-	local btn = create("TextButton", {
+	local btn = makeButton({
 		LayoutOrder = 2,
 		Size = UDim2.new(1, 0, 0, 30),
 		BackgroundColor3 = THEME.field,
 		Text = "",
 		AutoButtonColor = false,
 		Parent = wrap,
-	}, { corner(8), stroke(THEME.stroke) })
+	})
 	local valueLabel = create("TextLabel", {
 		Size = UDim2.new(1, -32, 1, 0),
 		Position = UDim2.fromOffset(10, 0),
@@ -924,7 +1152,7 @@ local function makeDropdown(parent, order, config)
 	if actions then
 		if not searchable then headerH += 6 end
 		local function actionButton(text, x)
-			return create("TextButton", {
+			return makeButton({
 				Position = UDim2.new(x, x == 0 and 6 or 3, 0, headerH),
 				Size = UDim2.new(0.5, -9, 0, 22),
 				BackgroundColor3 = THEME.field,
@@ -936,7 +1164,7 @@ local function makeDropdown(parent, order, config)
 				AutoButtonColor = true,
 				ZIndex = 21,
 				Parent = panel,
-			}, { corner(6) })
+			})
 		end
 		selectAllBtn = actionButton("Select All", 0)
 		clearBtn = actionButton("Clear", 0.5)
@@ -1122,11 +1350,13 @@ local function makeDropdown(parent, order, config)
 		if multi then
 			local on = not dd.selected[option.key]
 			dd.selected[option.key] = on and true or nil
+			markConfigDirty()
 			paintAll()
 			if config.onSelect then config.onSelect(option.key, on) end
 			notifyChange()
 		else
 			dd.value = option.key
+			markConfigDirty()
 			paintAll()
 			closeDropdowns()
 			if config.onSelect then config.onSelect(option.key, true) end
@@ -1140,6 +1370,7 @@ local function makeDropdown(parent, order, config)
 				local key = item.option.key
 				if item.button.Visible and not dd.selected[key] then
 					dd.selected[key] = true
+					markConfigDirty()
 					if config.onSelect then config.onSelect(key, true) end
 				end
 			end
@@ -1149,6 +1380,7 @@ local function makeDropdown(parent, order, config)
 		clearBtn.MouseButton1Click:Connect(function()
 			for key in pairs(dd.selected) do
 				dd.selected[key] = nil
+				markConfigDirty()
 				if config.onSelect then config.onSelect(key, false) end
 			end
 			paintAll()
@@ -1165,6 +1397,7 @@ local function makeDropdown(parent, order, config)
 	end
 
 	function dd.SetOptions(options)
+		local hadOptions = #dd.options > 0
 		for _, item in ipairs(dd.itemList) do item.button:Destroy() end
 		dd.itemList, dd.byKey, dd.options = {}, {}, {}
 
@@ -1173,7 +1406,7 @@ local function makeDropdown(parent, order, config)
 			table.insert(dd.options, option)
 			dd.byKey[option.key] = option
 
-			local button = create("TextButton", {
+			local button = makeButton({
 				Size = UDim2.new(1, 0, 0, DROPDOWN_ITEM_H),
 				LayoutOrder = i,
 				BackgroundTransparency = 1,
@@ -1186,13 +1419,13 @@ local function makeDropdown(parent, order, config)
 				AutoButtonColor = false,
 				ZIndex = 21,
 				Parent = list,
-			}, { pad(10, 0, 6, 0) })
+			}, { pad(10, 0, 6, 0) }, false)
 			button.MouseButton1Click:Connect(function() choose(option) end)
 			table.insert(dd.itemList, { option = option, button = button })
 		end
 
 		for key in pairs(dd.selected) do
-			if not dd.byKey[key] then dd.selected[key] = nil end
+			if hadOptions and not dd.byKey[key] then dd.selected[key] = nil end
 		end
 		applyFilter()
 		paintAll()
@@ -1236,13 +1469,16 @@ local function makeDropdown(parent, order, config)
 	return dd
 end
 
-env.AutumnDiceContext = {
+env.RayHubContext = {
 	Alive = true,
 	Players = Players, ReplicatedStorage = ReplicatedStorage, player = player,
 	State = State, CONFIG = CONFIG, TOWER_MODES = TOWER_MODES,
+	ConfigAdapters = {},
 	AutumnTravel = AutumnTravel,
 	SetFeature = SetFeature, GetFeature = GetFeature, FeatureHandlers = FeatureHandlers, CleanupHandlers = CleanupHandlers, notify = notify, onChange = onChange,
-	addTab = addTab, makeCard = makeCard, makeToggle = makeToggle, makeDropdown = makeDropdown, makeLine = makeLine, makeInput = makeInput,
+	SetConfigDirtyHandler = function(callback) configDirtyHandler = callback end,
+	markConfigDirty = markConfigDirty,
+	addTab = addTab, makeCard = makeCard, makeToggle = makeToggle, makeDropdown = makeDropdown, makeLine = makeLine, makeInput = makeInput, makeButton = makeButton, makeModal = makeModal,
 	create = create, corner = corner, stroke = stroke, pill = pill, vlist = vlist, pad = pad, formatNumber = formatNumber,
 	THEME = THEME, gui = gui, connections = connections, refreshers = refreshers,
 	getHRP = getHRP, getRemote = getRemote, invoke = invoke, pathString = pathString,
@@ -1252,9 +1488,9 @@ local pendingTabInitializer
 local runTabInitializer = Instance.new("BindableFunction")
 runTabInitializer.Parent = gui
 runTabInitializer.OnInvoke = function()
-	return pendingTabInitializer(env.AutumnDiceContext)
+	return pendingTabInitializer(env.RayHubContext)
 end
-env.AutumnDiceLoadModule = function(fileName)
+env.RayHubLoadModule = function(fileName)
 	local url = "https://raw.githubusercontent.com/rayshsh/hub/refs/heads/main/tabs/" .. fileName
 	local source = game:HttpGet(url)
 	local chunk, compileError = loadstring(source)
@@ -1268,12 +1504,13 @@ env.AutumnDiceLoadModule = function(fileName)
 	return result
 end
 
-env.AutumnDiceLoadModule("event.luau")
-env.AutumnDiceLoadModule("reroll.luau")
-env.AutumnDiceLoadModule("potion.luau")
-env.AutumnDiceLoadModule("tower.luau")
-env.AutumnDiceLoadModule("misc.luau")
-env.AutumnDiceLoadModule("trade.luau")
+env.RayHubLoadModule("event.luau")
+env.RayHubLoadModule("reroll.luau")
+env.RayHubLoadModule("potion.luau")
+env.RayHubLoadModule("tower.luau")
+env.RayHubLoadModule("trade.luau")
+env.RayHubLoadModule("misc.luau")
+env.RayHubLoadModule("settings.luau")
 refreshColumns()
 selectTab("Event")
 local hotkeyRow = create("Frame", {
@@ -1292,7 +1529,7 @@ create("TextLabel", {
 	TextXAlignment = Enum.TextXAlignment.Left,
 	Parent = hotkeyRow,
 })
-local hotkeyBtn = create("TextButton", {
+local hotkeyBtn = makeButton({
 	Size = UDim2.fromOffset(104, 20),
 	Position = UDim2.new(1, -104, 0.5, -10),
 	BackgroundColor3 = THEME.field,
@@ -1302,7 +1539,7 @@ local hotkeyBtn = create("TextButton", {
 	TextColor3 = THEME.accent,
 	AutoButtonColor = false,
 	Parent = hotkeyRow,
-}, { corner(8), stroke(THEME.stroke) })
+})
 
 local listeningForKey = false
 local function refreshHotkey()
@@ -1319,6 +1556,7 @@ hotkeyBtn.MouseButton1Click:Connect(function()
 		conn:Disconnect()
 		if input.KeyCode ~= Enum.KeyCode.Escape and input.KeyCode ~= Enum.KeyCode.Unknown then
 			State.Hotkey = input.KeyCode
+			markConfigDirty()
 		end
 		task.delay(0.15, function()
 			listeningForKey = false
@@ -1330,8 +1568,7 @@ end)
 table.insert(connections, UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed or listeningForKey then return end
 	if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == State.Hotkey then
-		main.Visible = not main.Visible
-		if not main.Visible then closeDropdowns() end
+		toggleMainVisible()
 	end
 end))
 
@@ -1363,7 +1600,7 @@ end
 onChange(refreshGui)
 refreshGui()
 local function Unload()
-	if env.AutumnDiceContext then env.AutumnDiceContext.Alive = false end
+	if env.RayHubContext then env.RayHubContext.Alive = false end
 	for name, handler in pairs(FeatureHandlers) do
 		pcall(handler, false)
 		State.Features[name] = false
@@ -1372,21 +1609,21 @@ local function Unload()
 	for name in pairs(State.Features) do State.Features[name] = false end
 	for _, c in ipairs(connections) do pcall(function() c:Disconnect() end) end
 	if gui then gui:Destroy() end
-	env.AutumnDiceContext = nil
-	env.AutumnDiceLoadModule = nil
-	env.AutumnDice = nil
+	env.RayHubContext = nil
+	env.RayHubLoadModule = nil
+	env.RayHub = nil
 end
 closeBtn.MouseButton1Click:Connect(Unload)
 
-env.AutumnDice = {
+env.RayHub = {
 	SetFeature = SetFeature,
 	GetFeature = GetFeature,
 	SetTowerMode = function(mode)
-		local tower = env.AutumnDiceContext and env.AutumnDiceContext.Tower
+		local tower = env.RayHubContext and env.RayHubContext.Tower
 		if tower and tower.setMode then tower.setMode(mode) end
 	end,
 	SetSelectedTower = function(name)
-		local tower = env.AutumnDiceContext and env.AutumnDiceContext.Tower
+		local tower = env.RayHubContext and env.RayHubContext.Tower
 		if tower and tower.setSelected then tower.setSelected(name) end
 	end,
 	GetStatus = function() return State.Status, State.Detail end,

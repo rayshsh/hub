@@ -560,10 +560,10 @@ local function makeRarityInput(order, labelText, initialText, onChanged)
 	return box
 end
 
-makeRarityInput(3, "Starting Rarity", UnitFuse.startRarityText, function(value)
+local startingRarityBox = makeRarityInput(3, "Starting Rarity", UnitFuse.startRarityText, function(value)
 	UnitFuse.startRarityText = value
 end)
-makeRarityInput(4, "Limit Rarity", UnitFuse.limitRarityText, function(value)
+local limitRarityBox = makeRarityInput(4, "Limit Rarity", UnitFuse.limitRarityText, function(value)
 	UnitFuse.limitRarityText = value
 end)
 makeToggle(fuseBody, 5, "Skip Fusion Animation", "SkipFuseAnimation")
@@ -589,6 +589,46 @@ local dropdownsByKind = {
 	traits = traitDropdown, traitUnits = traitUnitDropdown,
 	grades = gradeDropdown, gradeUnits = gradeUnitDropdown,
 	quirks = quirkDropdown, quirkUnits = quirkUnitDropdown,
+}
+ctx.ConfigAdapters.reroll = {
+	get = function()
+		return {
+			traitMode = TraitReroll.mode,
+			traits = traitDropdown.GetSelected(),
+			traitUnits = traitUnitDropdown.GetSelected(),
+			gradeMode = GradeReroll.mode,
+			grades = gradeDropdown.GetSelected(),
+			gradeUnits = gradeUnitDropdown.GetSelected(),
+			quirkMode = QuirkReroll.mode,
+			quirks = quirkDropdown.GetSelected(),
+			quirkUnits = quirkUnitDropdown.GetSelected(),
+			fusionPriority = UnitFuse.priority,
+			startingRarity = UnitFuse.startRarityText,
+			limitRarity = UnitFuse.limitRarityText,
+		}
+	end,
+	set = function(value)
+		if type(value) ~= "table" then return end
+		local modes = { "Picked Units", "All Equipped" }
+		if table.find(modes, value.traitMode) then TraitReroll.mode = value.traitMode; traitModeDropdown.SetValue(value.traitMode) end
+		if table.find(modes, value.gradeMode) then GradeReroll.mode = value.gradeMode; gradeModeDropdown.SetValue(value.gradeMode) end
+		if table.find(modes, value.quirkMode) then QuirkReroll.mode = value.quirkMode; quirkModeDropdown.SetValue(value.quirkMode) end
+		for key, dropdown in pairs({traits = traitDropdown, traitUnits = traitUnitDropdown, grades = gradeDropdown, gradeUnits = gradeUnitDropdown, quirks = quirkDropdown, quirkUnits = quirkUnitDropdown}) do
+			if type(value[key]) == "table" then dropdown.SetSelected(value[key]) end
+		end
+		if value.fusionPriority == "Start with Highest" or value.fusionPriority == "Start with Lowest" then
+			UnitFuse.priority = value.fusionPriority
+			fusePriorityDropdown.SetValue(value.fusionPriority)
+		end
+		if type(value.startingRarity) == "string" and #value.startingRarity <= 32 then
+			UnitFuse.startRarityText = value.startingRarity
+			startingRarityBox.Text = value.startingRarity
+		end
+		if type(value.limitRarity) == "string" and #value.limitRarity <= 32 then
+			UnitFuse.limitRarityText = value.limitRarity
+			limitRarityBox.Text = value.limitRarity
+		end
+	end,
 }
 local signatures, pendingSignatures = {}, {}
 
