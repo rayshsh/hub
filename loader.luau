@@ -64,6 +64,10 @@ local TOWER_MODES = { "Single", "Best Leaf Tower" }
 local State = {
 	Features = {
 		AutoDice = false, AutoTower = false, AutoEquipBest = false, AutoQuest = false, AutoBuy = false, AutoPotion = false, AutoFusePotion = false,
+		AutoTraitReroll = false, TraitRerollEventOnly = false,
+		AutoGradeReroll = false, GradeRerollEventOnly = false, AutoQuirkReroll = false,
+		AutoUnitsFuse = false, SkipFuseAnimation = false,
+		TradeSendMax = false, TradeAutoSend = false,
 		AntiAfk = false, AutoReconnect = false, AutoClaimQuest = false,
 	},
 	Status = "Idle",
@@ -745,6 +749,39 @@ local function makeLine(parent, order, size, color, font)
 	})
 end
 
+local function makeInput(parent, order, labelText, initialText, placeholder)
+	local row = create("Frame", {
+		LayoutOrder = order,
+		Size = UDim2.new(1, 0, 0, 30),
+		BackgroundTransparency = 1,
+		Parent = parent,
+	})
+	create("TextLabel", {
+		Size = UDim2.new(0, 140, 1, 0),
+		BackgroundTransparency = 1,
+		Text = labelText,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 12,
+		TextColor3 = THEME.text,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Parent = row,
+	})
+	return create("TextBox", {
+		Position = UDim2.new(0, 150, 0, 0),
+		Size = UDim2.new(1, -150, 1, 0),
+		BackgroundColor3 = THEME.field,
+		BorderSizePixel = 0,
+		Text = initialText or "",
+		PlaceholderText = placeholder or "",
+		PlaceholderColor3 = THEME.subtext,
+		TextColor3 = THEME.text,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 12,
+		ClearTextOnFocus = false,
+		Parent = row,
+	}, { corner(8), pad(8, 0, 8, 0) })
+end
+
 local function makeToggle(parent, order, labelText, featureName)
 	local row = create("TextButton", {
 		LayoutOrder = order,
@@ -1205,7 +1242,7 @@ env.AutumnDiceContext = {
 	State = State, CONFIG = CONFIG, TOWER_MODES = TOWER_MODES,
 	AutumnTravel = AutumnTravel,
 	SetFeature = SetFeature, GetFeature = GetFeature, FeatureHandlers = FeatureHandlers, CleanupHandlers = CleanupHandlers, notify = notify, onChange = onChange,
-	addTab = addTab, makeCard = makeCard, makeToggle = makeToggle, makeDropdown = makeDropdown, makeLine = makeLine,
+	addTab = addTab, makeCard = makeCard, makeToggle = makeToggle, makeDropdown = makeDropdown, makeLine = makeLine, makeInput = makeInput,
 	create = create, corner = corner, stroke = stroke, pill = pill, vlist = vlist, pad = pad, formatNumber = formatNumber,
 	THEME = THEME, gui = gui, connections = connections, refreshers = refreshers,
 	getHRP = getHRP, getRemote = getRemote, invoke = invoke, pathString = pathString,
@@ -1232,9 +1269,11 @@ env.AutumnDiceLoadModule = function(fileName)
 end
 
 env.AutumnDiceLoadModule("event.luau")
+env.AutumnDiceLoadModule("reroll.luau")
 env.AutumnDiceLoadModule("potion.luau")
 env.AutumnDiceLoadModule("tower.luau")
 env.AutumnDiceLoadModule("misc.luau")
+env.AutumnDiceLoadModule("trade.luau")
 refreshColumns()
 selectTab("Event")
 local hotkeyRow = create("Frame", {
@@ -1359,4 +1398,4 @@ env.AutumnDice = {
 
 for _, name in ipairs({ "AntiAfk", "AutoDice" }) do
 	SetFeature(name, true)
-end
+end
